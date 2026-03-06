@@ -1,0 +1,71 @@
+# This workflow runs the R script NECOFS_Daily_Download.R on GitHub's servers.
+# The workflow is scheduled to be triggered via cron-job.org once daily.
+# Output: Commit of CSV output into the repo.
+
+name: NECOFS daily download
+
+on:
+  # Allows script to be run manually from the Actions tab.
+  workflow_dispatch: {}
+
+# Permission to push commits back to the repository.
+permissions:
+  contents: write
+
+jobs:
+  run-necofs:
+    # Use a fresh Ubuntu machine each run. This is the default / most common choice.
+    # Basically, when this is triggered, it builds a virtual computer (temporary machine) which installs
+    # R, runs the script, and then erases the virtual computer.
+    # Free for public repos. Free up to a point for private repos.
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1) Pull repository code onto the runner. (Download a copy of the repository onto the temporary machine.)
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Full history helps avoid edge cases when committing/pushing.
+          fetch-depth: 0
+
+      # 2) Install R on the runner.
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+      
+      # 3)
+      - name: Install system libraries for ncdf4 (netCDF)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libnetcdf-dev netcdf-bin libhdf5-dev
+
+      # 4) Run the script.
+      # Assumes NECOFS_Daily_Download.R is in the repo root.
+      # If it's in a folder, change the path (e.g., scripts/NECOFS_Daily_Download.R).
+      - name: Run NECOFS_Daily_Download.R
+        env:
+          # Make Sys.Date() and other time functions behave consistently in Eastern time.
+          TZ: America/New_York
+        run: Rscript NECOFS_Daily_Download.R
+
+      # 5) Commit and push the outputs folder (monthly subfolders are inside Data/NECOFS/).
+      # Stage only Data/NECOFS/ to avoid accidentally committing other files.
+      - name: Commit and push outputs (if changed)
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # Stage ONLY your NECOFS outputs
+          git add Data/NECOFS
+
+          # If no files changed, exit without creating a commit
+          if git diff --cached --quiet; then
+            echo "No output changes to commit."
+            exit 0
+          fi
+
+          # Commit with a date stamp
+          git commit -m "Daily NECOFS CSV: $(date -u +'%Y-%m-%d')"
+
+          # Push back to main branch
+          git push
