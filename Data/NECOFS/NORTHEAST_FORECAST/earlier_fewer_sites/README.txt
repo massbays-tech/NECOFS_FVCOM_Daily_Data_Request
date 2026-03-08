@@ -1,0 +1,1 @@
+Massachusetts Site PV is referred to PI within the data in this folder. This is confusing, as there is also a PI site in Rhode Island. This was later corrected.
