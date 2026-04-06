@@ -25,14 +25,6 @@ dir.create(out_dir_NE, showWarnings = FALSE, recursive = TRUE)
 # Create day stamp for saving files later
 day_stamp <- format(Sys.Date(), "%Y-%m-%d")
 
-# ---- Test Script ----
-# # Simple data frame
-# df <- data.frame(
-#   message = "workflow test",
-#   date = Sys.Date(),
-#   time = Sys.time()
-# )
-
 
 # ---- Read site data and extract list of coordinates by site ----
 site_coords_MA <- read.csv("Data/site_coords_MASSBAYS.csv")
@@ -117,16 +109,6 @@ for (i in seq_len(nrow(site_coords_MA))) {
 
 # Create df of hourly temps
 hourly_temps <- bind_rows(hourly_temps)
-
-# # Calculate daily mean and median temps by site.
-# daily_temps <- hourly_temps |>
-#   mutate(date = as.Date(time, tz = "UTC")) |> 
-#   group_by(site_id, date) |>
-#   summarize(
-#     temp_daily_mean = mean(temp_c, na.rm = TRUE),
-#     temp_daily_median = median(temp_c, na.rm = TRUE),
-#     .groups = "drop"
-#   )
 
 # Close .nc file
 nc_close(nc)
