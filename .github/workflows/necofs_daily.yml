@@ -12,6 +12,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   run-necofs:
     # Use a fresh Ubuntu machine each run. This is the default / most common choice.
@@ -23,7 +26,7 @@ jobs:
     steps:
       # 1) Pull repository code onto the runner. (Download a copy of the repository onto the temporary machine.)
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # Full history helps avoid edge cases when committing/pushing.
           fetch-depth: 0
