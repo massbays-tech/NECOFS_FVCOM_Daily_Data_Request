@@ -68,7 +68,7 @@ jobs:
           fi
 
           # Commit with a date stamp
-          git commit -m "Daily NECOFS CSV: $(date -u +'%Y-%m-%d')"
+          git commit -m "Daily NECOFS CSV: $(TZ=America/New_York date +'%Y-%m-%d')"
 
           # Push back to main branch
           git push
