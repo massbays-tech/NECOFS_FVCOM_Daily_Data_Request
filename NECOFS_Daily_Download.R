@@ -240,4 +240,3 @@ nc_close(nc)
 # ---- Write CSV of daily hourly_temps NORTHEAST ----
 out_csv <- file.path(out_dir_NE, paste0("tempc_bot_hrly_NORTHEAST_NECOFS_", day_stamp, ".csv"))
 write.csv(hourly_temps, out_csv, row.names = FALSE)
-
