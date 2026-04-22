@@ -45,6 +45,50 @@ nearest_node <- function(lon, lat, lon0, lat0) {
   which.min(x^2 + y^2)
 }
 
+# ---- Build a small helper function to safely open remote netCDF URLs ----
+# Remote OPeNDAP connections can occasionally fail due to server/network issues.
+# This function retries nc_open() a few times before stopping.
+safe_nc_open <- function(url, tries = 3, wait_sec = 10) {
+  for (i in seq_len(tries)) {
+    out <- try(nc_open(url), silent = TRUE)
+    if (!inherits(out, "try-error")) return(out)
+    
+    message("nc_open failed on attempt ", i, " of ", tries)
+    if (i < tries) Sys.sleep(wait_sec)
+  }
+  stop("Could not open remote dataset after retries: ", url)
+}
+
+# ---- Build a helper function to get the current length of the time dimension ----
+# Opening the time variable directly (for example with ?time) has proven slow and unstable
+# for the very large NORTHEAST forecase dataset. 
+# Instead, use the lightweight DDS metadata endpoint.
+# The DDS is plain-text metadata that describes the structure of the remote dataset,
+# including variable dimensions. In the DDS, the time variable appears like:
+#   Float64 time[time = 4969];
+#
+# This function reads that metadata and extracts the current length of the time dimension
+# without opening the time variable through ncdf4.
+get_time_length <- function(base_URL) {
+  dds_url <- paste0(base_URL, ".dds")
+  dds_txt <- readLines(dds_url, warn = FALSE)
+  
+  # Match the actual line defining the numeric time variable
+  time_line <- grep("Float64 time\\[time =", dds_txt, value = TRUE)
+  
+  if (length(time_line) == 0) {
+    stop("Could not find time dimension in DDS metadata.")
+  }
+  
+  nt <- as.integer(sub(".*time *= *([0-9]+).*", "\\1", time_line))
+  
+  if (is.na(nt)) {
+    stop("Failed to parse time dimension length from DDS metadata.")
+  }
+  
+  return(nt)
+}
+
 
 # ---- NECOFS_FVCOM_OCEAN_MASSBAY_FORECAST ----
 # Link to NECOFS_FVCOM_OCEAN_MASSBAY_FORECAST.nc THREDDS page:
@@ -54,10 +98,10 @@ nearest_node <- function(lon, lat, lon0, lat0) {
 URL <- "http://www.smast.umassd.edu:8080/thredds/dodsC/models/fvcom/NECOFS/Forecasts/NECOFS_FVCOM_OCEAN_MASSBAY_FORECAST.nc"
 
 # Open netCDF file to read data
-nc <- nc_open(URL)
-
+nc <- safe_nc_open(URL)
+  
 # Get time range
-# On any given day, the date range available for this data set is foretasted *two* days
+# On any given day, the date range available for this data set is forecasted *two* days
 # forward, plus one additional hourly time point at midnight the next day, and *three* days back.
 # For example data requested the evening of March 5th will include data from midnight of
 # March 2nd through March 7th, plus the midnight value on March 8th.
@@ -126,15 +170,8 @@ write.csv(hourly_temps, out_csv, row.names = FALSE)
 # Set the base OpenDAP URL
 base_URL <- "http://www.smast.umassd.edu:8080/thredds/dodsC/models/fvcom/NECOFS/Forecasts/NECOFS_FVCOM_OCEAN_NORTHEAST_FORECAST.nc"
 
-# Access just the time variable variable, to see the available time range.
-# The "?" before a variable, after the base URL, accesses the entire available range of that variable.
-nc_time <- nc_open(paste0(base_URL, "?time"))
-
 # Read the number of times currently in the forecast data set
-nt <- nc_time$dim$time$len
-
-# Close remote link to the data set
-nc_close(nc_time)
+nt <- get_time_length(base_URL)
 
 # On any given day, the date range available for this data set is a foretasted *five* days
 # forward, plus one additional hourly time point at midnight the next day.
@@ -151,42 +188,25 @@ first_idx_0 <- max(0, last_idx_0 - 192) # 8 days prior to the furthest forecast
 
 time_slice <- paste0("[", first_idx_0, ":1:", last_idx_0, "]")
 
-# Build the data request URL. Request all lat & lon, and request time, Times, and t
-URL <- paste0(
-  base_URL,
-  # Request all lat & lon. Request limited range of times
-  "?lon,lat,time", time_slice,
-  # Request limited range of the variable Times
-  ",Times", time_slice,
-  # Request temperatures for limited time range, for only the bottom sigma layer (node 44, nearest bottom water), for all lat & lon 
-  ",temp", time_slice, "[44:1:44][0:1:207080]" 
-)
+# Request all lat & lon first, separately from the temperature request.
+# These mesh geometry variables are lightweight compared with the forecast variables,
+# and are needed to identify the nearest model node for each site.
+geo_url <- paste0(base_URL, "?lon,lat")
 
-# Open netCDF file to read data
-nc <- nc_open(URL)
-
-# Check time range
-Times <- ncvar_get(nc, "Times")
+# Open netCDF file to read geometry
+nc_geo <- safe_nc_open(geo_url)
 
 # Extract all longitude and latitude values and check ranges
-lon <- ncvar_get(nc, "lon")
-lat <- ncvar_get(nc, "lat")
+lon <- ncvar_get(nc_geo, "lon")
+lat <- ncvar_get(nc_geo, "lat")
 
-# Determine the number of time measurements made
-times_count <- nc$dim$time$len
+# Close geometry file once lon/lat have been read
+nc_close(nc_geo)
 
-# Create empty columns for node index and not lat/lon coords
+# Create empty columns for node index and node lat/lon coords
 site_coords_NE$nearest_node <- NA_integer_
 site_coords_NE$node_lat <- NA
 site_coords_NE$node_lon <- NA
-
-# Create an empty list of dfs the length of site_coords_NE (one df for each site)
-hourly_temps <- vector("list", nrow(site_coords_NE))
-
-# Set up for loop:
-# Establish total time steps and chunk size
-nt <- nc$dim[["time"]]$len
-chunk_size <- 24 # 1 day
 
 # Iterate through site coordinates df identifying the closest node and corresponding coordinates
 for (i in seq_len(nrow(site_coords_NE))) {
@@ -195,34 +215,76 @@ for (i in seq_len(nrow(site_coords_NE))) {
   lat0 <- site_coords_NE$latitude[i]
   idx <- nearest_node(lon, lat, lon0, lat0)
   site_coords_NE$nearest_node[i] <- idx
-  
+
   # Use index to determine lat and lon of nearest node
   site_coords_NE$node_lat[i] <- lat[idx]
   site_coords_NE$node_lon[i] <- lon[idx]
-  
+}
+
+# Create an empty list of dfs the length of site_coords_NE (one df for each site)
+hourly_temps <- vector("list", nrow(site_coords_NE))
+
+# Set up for loop:
+# Establish total time steps and chunk size
+nt <- last_idx_0 - first_idx_0 + 1
+chunk_size <- 24 # 1 day
+
+# Iterate through site coordinates df using the closest node and corresponding coordinates
+for (i in seq_len(nrow(site_coords_NE))) {
+  # Get nearest node index already calculated above
+  idx <- site_coords_NE$nearest_node[i]
+
+  # Convert R's 1-based index to OpenDAP's 0-based index for URL slicing
+  idx_0 <- idx - 1
+
+  # Build the data request URL for one site only.
+  # Request limited range of Times and temp for:
+  #   - the selected time window
+  #   - the bottom sigma layer only ([44:1:44] in 0-based OpenDAP indexing)
+  #   - the single nearest node for this site
+  site_url <- paste0(
+    base_URL,
+    "?Times", time_slice,
+    ",temp", time_slice, "[44:1:44][", idx_0, ":1:", idx_0, "]"
+  )
+
+  # Open netCDF file for this one site's request
+  nc <- safe_nc_open(site_url)
+
+  # Check time range
+  Times <- ncvar_get(nc, "Times")
+
+  # If Times is returned as a character matrix, collapse each entry into one timestamp string
+  if (is.matrix(Times)) {
+    Times <- apply(Times, 2, paste0, collapse = "")
+  }
+
   temp_ts <- numeric(nt)
-  
+
   # Read in chunks over time to report progress
   for (t0 in seq(1, nt, by = chunk_size)) {
     t1 <- min(t0 + chunk_size - 1, nt) # Set high value in chunk
     n_this <- t1 - t0 + 1 # Determine how many time values for the request
-    
-    # Get temp measurements 
+
+    # Get temp measurements
     vals <- ncvar_get(
       nc, "temp",
-      start = c(idx, 1, t0),    # (node index, sigma-layer index is 1 since URL subset includes only the lowest layer [44], first time index for this chunk)
-      count = c(1,  1, n_this)  # (one node, one sigma layer, number of time values for chunk)
+      start = c(1, 1, t0),    # (node index, sigma-layer index, time index)
+      count = c(1, 1, n_this) # (one node, one sigma layer, number of time values)
     )
-    
+
     temp_ts[t0:t1] <- as.numeric(vals)
-    
+
     message(
       "Site ", site_coords_NE$site.id[i],
       " progress: ", t0, "-", t1, " / ", nt,
       " (", Times[t0], " to ", Times[t1], ")"
     )
   }
-  
+
+  # Close .nc file for this site
+  nc_close(nc)
+
   # Build an hourly time series table for this site (one row per model timestamp) with temperature at the nearest node
   hourly_temps[[i]] <- data.frame(
     site_id = site_coords_NE$site.id[i],
@@ -233,9 +295,6 @@ for (i in seq_len(nrow(site_coords_NE))) {
 
 # Create df of hourly temps
 hourly_temps <- bind_rows(hourly_temps)
-
-# Close .nc file
-nc_close(nc)
 
 # ---- Write CSV of daily hourly_temps NORTHEAST ----
 out_csv <- file.path(out_dir_NE, paste0("tempc_bot_hrly_NORTHEAST_NECOFS_", day_stamp, ".csv"))
